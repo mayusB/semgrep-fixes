@@ -1,139 +1,122 @@
-# Tags Semgrep projects whose GitHub repo has been archived.
-#
-# Archiving a repo on GitHub doesn't tell Semgrep anything, so the project keeps
-# showing up in the dashboard and in scan counts. This walks the org's repos,
-# finds the archived ones, and tags the matching Semgrep projects so they can be
-# filtered out.
-#
-#   export GITHUB_AUTH_TOKEN=...        # needs repo read on the org
-#   export SEMGREP_APP_TOKEN=...
-#   export GITHUB_ORG=my-org
-#   export SEMGREP_DEPLOYMENT_SLUG=my-deployment
-#   python semgrep_git_archive_tag.py
+#!/usr/bin/env python3
+"""Tag Semgrep projects whose GitHub repository has been archived.
 
-# Importing required libraries
-import requests
-import os
-import re
+Archiving a repo on GitHub tells Semgrep nothing, so the project keeps appearing
+in the dashboard and in scan counts long after anyone stopped working on it.
+This walks the org's repos, finds the archived ones, and tags the matching
+Semgrep projects so they can be filtered out.
+
+    export GITHUB_AUTH_TOKEN=...          # needs read access to the org's repos
+    export SEMGREP_APP_TOKEN=...
+    export GITHUB_ORG=my-org
+    export SEMGREP_DEPLOYMENT_SLUG=my-deployment
+    python semgrep_git_archive_tag.py --dry-run
+"""
+
+from __future__ import annotations
+
+import argparse
 import sys
 
-# Retrieving authentication tokens and targets from environment variables
-GITHUB_AUTH_TOKEN = os.getenv("GITHUB_AUTH_TOKEN")
-SEMGREP_APP_TOKEN = os.getenv("SEMGREP_APP_TOKEN")
-GITHUB_ORG = os.getenv("GITHUB_ORG")
-DEPLOYMENT_SLUG = os.getenv("SEMGREP_DEPLOYMENT_SLUG")
+from semgrep_api import (
+    GITHUB_API_ROOT,
+    SEMGREP_API_ROOT,
+    ApiError,
+    github_session,
+    paginate,
+    request_json,
+    require_env,
+    semgrep_session,
+)
 
-def get_paginated_data(url, github_token):
-    next_pattern = r'(?<=<)([\S]*)(?=>; rel="next")'
-    pages_remaining = True
-    data = []
+ARCHIVED_TAG = "archived"
 
-    while pages_remaining:
 
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {github_token}",
-            "X-GitHub-Api-Version": "2022-11-28"
-            }
-        
-        response = requests.get(url, params={"per_page": 100}, headers=headers)
-        response_data = response.json()
+def archived_repo_names(org: str, token: str) -> set[str]:
+    """Return `owner/name` for every archived repo in the org."""
+    session = github_session(token)
+    url = f"{GITHUB_API_ROOT}/orgs/{org}/repos"
 
-        parsed_data = parse_data(response_data)
-        data.extend(parsed_data)
-
-        link_header = response.headers.get("link")
-
-        pages_remaining = link_header and "rel=\"next\"" in link_header
-
-        if pages_remaining:
-            next_url_match = re.search(next_pattern, link_header)
-            if next_url_match:
-                url = next_url_match.group(0)
-
-    return data
-
-def parse_data(data):
-    if isinstance(data, list):
-        return data
-
-    if not data:
-        return []
-
-    del data["incomplete_results"]
-    del data["repository_selection"]
-    del data["total_count"]
-
-    namespace_key = list(data.keys())[0]
-    data = data[namespace_key]
-
-    return data
-
-# Function to retrieve archived repositories from GitHub
-def get_archived_repos(data):
-
-    repos = data
-    
-    # Extracting archived repository names
-    archived_repos = [repo["full_name"] for repo in repos if repo.get("archived")]
-    
-    print(f"GitHub Archived Repos: {archived_repos}")
-    return archived_repos
-    
-# Function to retrieve all projects from SEMGREP
-def get_all_projects(archived_repos, semgrep_token):
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {semgrep_token}"
-    }
-    page = 0
-    url = f"https://semgrep.dev/api/v1/deployments/{DEPLOYMENT_SLUG}/projects"
-    
-    # Sending GET request to SEMGREP API to retrieve projects
-    response = requests.get(url, params={"page": {page}}, headers=headers)
-    
-    # Parsing response JSON data
-    projects_data = response.json()["projects"]
-    
-    # Matching archived repositories with SEMGREP projects
-    projects_to_tag = [project["name"] for project in projects_data if project["name"] in archived_repos]
-    
-    print(f"Scanned SCP Projects to Tag: {projects_to_tag}")
-
-    return projects_to_tag    
-
-# Function to tag archived repositories in SEMGREP
-def tag_archived_repos(projects_to_tag, semgrep_token):
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {semgrep_token}"
+    return {
+        repo["full_name"]
+        for repo in paginate(session, url, params={"type": "all"})
+        if repo.get("archived")
     }
 
-    # Constructing payload for tagging archived repositories
-    payload = {"tags": ["archived"]}
 
-    # Tagging archived repositories in SEMGREP
-    for project_name in projects_to_tag:
-        url = f"https://semgrep.dev/api/v1/deployments/{DEPLOYMENT_SLUG}/projects/{project_name}/tags"
-        response = requests.put(url, headers=headers, json=payload)
-        if response.ok:
-            print(f"Project tag successful: {project_name}")
+def semgrep_project_names(deployment_slug: str, token: str) -> set[str]:
+    """Return the name of every project in the deployment."""
+    session = semgrep_session(token)
+    url = f"{SEMGREP_API_ROOT}/deployments/{deployment_slug}/projects"
+
+    return {project["name"] for project in paginate(session, url)}
+
+
+def tag_projects(deployment_slug: str, token: str, names: list[str]) -> list[str]:
+    """Tag each project as archived. Returns the names that failed."""
+    session = semgrep_session(token)
+    failed: list[str] = []
+
+    for name in names:
+        url = f"{SEMGREP_API_ROOT}/deployments/{deployment_slug}/projects/{name}/tags"
+        try:
+            request_json(session, "PUT", url, json={"tags": [ARCHIVED_TAG]})
+        except ApiError as exc:
+            print(f"  failed: {name}: {exc}", file=sys.stderr)
+            failed.append(name)
         else:
-            print(f"Project tag failed for {project_name}: {response.status_code} {response.text}")
+            print(f"  tagged: {name}")
 
-# Fail early rather than sending unauthenticated requests
-if not all([GITHUB_AUTH_TOKEN, SEMGREP_APP_TOKEN, GITHUB_ORG, DEPLOYMENT_SLUG]):
-    sys.exit(
-        "Set GITHUB_AUTH_TOKEN, SEMGREP_APP_TOKEN, GITHUB_ORG and "
-        "SEMGREP_DEPLOYMENT_SLUG before running."
+    return failed
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be tagged without changing anything",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    github_token, semgrep_token, org, deployment_slug = require_env(
+        "GITHUB_AUTH_TOKEN",
+        "SEMGREP_APP_TOKEN",
+        "GITHUB_ORG",
+        "SEMGREP_DEPLOYMENT_SLUG",
     )
 
-# Retrieve archived repositories
-data = get_paginated_data(f"https://api.github.com/orgs/{GITHUB_ORG}/repos", GITHUB_AUTH_TOKEN)
-archived_repos = get_archived_repos(data)
+    try:
+        archived = archived_repo_names(org, github_token)
+        print(f"archived repos in {org}: {len(archived)}")
 
-# Retrieve all projects from SEMGREP
-projects_to_tag = get_all_projects(archived_repos, SEMGREP_APP_TOKEN)
+        projects = semgrep_project_names(deployment_slug, semgrep_token)
+        # Set intersection, so a large org doesn't turn into a nested scan.
+        to_tag = sorted(archived & projects)
 
-# Tag archived repositories in SEMGREP
-tag_archived_repos(projects_to_tag, SEMGREP_APP_TOKEN)
+        if not to_tag:
+            print("nothing to tag")
+            return 0
+
+        print(f"projects to tag: {len(to_tag)}")
+        if args.dry_run:
+            for name in to_tag:
+                print(f"  would tag: {name}")
+            return 0
+
+        failed = tag_projects(deployment_slug, semgrep_token, to_tag)
+    except ApiError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    if failed:
+        print(f"{len(failed)} of {len(to_tag)} failed", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

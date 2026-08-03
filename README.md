@@ -29,6 +29,7 @@ ci-cd/
   azure_pipeline.yaml          Azure Pipelines, matrix over monorepo subdirs
   Jenkinsfile                  Jenkins + Bitbucket, picks diff vs full by PR id
 
+semgrep_api.py                 shared session, pagination and error handling
 semgrep_git_archive_tag.py     tag Semgrep projects whose GitHub repo is archived
 semgrep_findings_id.py         list finding ids for one scan ref
 semgrep_ssc_vuln.py            count reachable supply-chain findings
@@ -51,7 +52,8 @@ Three patterns run through the configs and are the actual content:
 The CI files are references — copy the relevant one into `.github/workflows/`
 (or your Azure/Jenkins equivalent) and set `SEMGREP_APP_TOKEN` as a secret.
 
-The scripts need Python 3.9+ and take everything from the environment:
+The scripts need Python 3.9+. Credentials come from the environment, everything
+else from flags — `--help` on any of them lists the options.
 
 ```bash
 pip install -r requirements.txt
@@ -59,12 +61,17 @@ pip install -r requirements.txt
 export SEMGREP_APP_TOKEN=...
 export SEMGREP_DEPLOYMENT_SLUG=your-deployment
 
-python semgrep_findings_id.py gitlab-mr
+python semgrep_findings_id.py --ref gitlab-mr
+python semgrep_findings_id.py --all-refs        # to see which refs exist
 ```
 
-`semgrep_git_archive_tag.py` also needs `GITHUB_AUTH_TOKEN` and `GITHUB_ORG`.
-`semgrep_ssc_vuln.py` reads `SEMGREP_DEPLOYMENT_ID` instead of the slug, since
-that's what the `ssc-vulns` endpoint was called with.
+`semgrep_git_archive_tag.py` also needs `GITHUB_AUTH_TOKEN` and `GITHUB_ORG`, and
+takes `--dry-run` — it writes tags, so check what it matched before letting it
+loose on a real deployment. `semgrep_ssc_vuln.py` reads `SEMGREP_DEPLOYMENT_ID`
+instead of the slug, since that's what the `ssc-vulns` endpoint was called with.
+
+Finding ids print to stdout and progress to stderr, so the output pipes into
+`diff` or `wc -l` without needing to be cleaned up first.
 
 ## Notes
 
@@ -73,7 +80,10 @@ that's what the `ssc-vulns` endpoint was called with.
 - Written and last exercised against the API as it stood in 2024. I haven't
   re-verified the endpoints since, so treat the scripts as a starting point
   rather than a maintained client.
-- The scripts fetch a single page. Only `semgrep_git_archive_tag.py` follows
-  pagination, because it was the one that ran against an org large enough to need
-  it — the other two will undercount past 100 results.
+- All three scripts paginate, so counts don't quietly stop at 100. The Semgrep
+  endpoints are page-number based and GitHub's are Link-header based, which is
+  why `semgrep_api.py` handles both shapes.
+- There are no tests. The scripts are thin wrappers over API calls, so the
+  useful test would need a recorded fixture or a live deployment, and I had
+  neither when writing them.
 - Covers CI integration and the API only. Nothing here is about rule authoring.
