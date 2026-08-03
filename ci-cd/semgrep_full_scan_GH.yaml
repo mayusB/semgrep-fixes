@@ -1,10 +1,29 @@
-  semgrep_exclude: 
+# Full scan, GitHub Actions.
+#
+# Full scans run on the default branch and on a schedule. There is deliberately
+# no `pull_request` trigger here — with one, semgrep ci diffs against the merge
+# base, which is a diff scan, and the dashboard never gets a complete picture of
+# the branch. Use semgrep_pr_scan_GH.yaml for that.
+name: Semgrep full scan
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - main
+      - master
+  schedule:
+    # random HH:MM to avoid a load spike on GitHub Actions at 00:00
+    - cron: '55 14 * * *'
+
+jobs:
+  semgrep:
     name: semgrep/ci
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     env:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
     container:
-      image: returntocorp/semgrep
+      image: semgrep/semgrep
     steps:
-    - uses: actions/checkout@v3
-    - run: semgrep ci
+      - uses: actions/checkout@v4
+      - run: semgrep ci

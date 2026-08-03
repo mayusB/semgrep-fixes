@@ -19,23 +19,23 @@ jobs:
           - mrepo 1
           - mrepo 2
     name: semgrep/ci
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     env:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
       SEMGREP_REPO_DISPLAY_NAME: monorepo-test--${{ matrix.subdir }}
     container:
-      image: returntocorp/semgrep
+      image: semgrep/semgrep
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - run: semgrep ci --include=${{ matrix.subdir }}
 
   semgrep_exclude: 
     name: semgrep/ci
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     env:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
     container:
-      image: returntocorp/semgrep
+      image: semgrep/semgrep
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - run: semgrep ci

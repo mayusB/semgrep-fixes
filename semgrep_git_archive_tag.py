@@ -1,11 +1,27 @@
+# Tags Semgrep projects whose GitHub repo has been archived.
+#
+# Archiving a repo on GitHub doesn't tell Semgrep anything, so the project keeps
+# showing up in the dashboard and in scan counts. This walks the org's repos,
+# finds the archived ones, and tags the matching Semgrep projects so they can be
+# filtered out.
+#
+#   export GITHUB_AUTH_TOKEN=...        # needs repo read on the org
+#   export SEMGREP_APP_TOKEN=...
+#   export GITHUB_ORG=my-org
+#   export SEMGREP_DEPLOYMENT_SLUG=my-deployment
+#   python semgrep_git_archive_tag.py
+
 # Importing required libraries
 import requests
 import os
 import re
+import sys
 
-# Retrieving authentication tokens from environment variables
+# Retrieving authentication tokens and targets from environment variables
 GITHUB_AUTH_TOKEN = os.getenv("GITHUB_AUTH_TOKEN")
 SEMGREP_APP_TOKEN = os.getenv("SEMGREP_APP_TOKEN")
+GITHUB_ORG = os.getenv("GITHUB_ORG")
+DEPLOYMENT_SLUG = os.getenv("SEMGREP_DEPLOYMENT_SLUG")
 
 def get_paginated_data(url, github_token):
     next_pattern = r'(?<=<)([\S]*)(?=>; rel="next")'
@@ -71,8 +87,7 @@ def get_all_projects(archived_repos, semgrep_token):
         "Authorization": f"Bearer {semgrep_token}"
     }
     page = 0
-    deployment_slug = "bodlexnig_personal_org"
-    url = f"https://semgrep.dev/api/v1/deployments/{deployment_slug}/projects"
+    url = f"https://semgrep.dev/api/v1/deployments/{DEPLOYMENT_SLUG}/projects"
     
     # Sending GET request to SEMGREP API to retrieve projects
     response = requests.get(url, params={"page": {page}}, headers=headers)
@@ -93,23 +108,28 @@ def tag_archived_repos(projects_to_tag, semgrep_token):
         "Accept": "application/json",
         "Authorization": f"Bearer {semgrep_token}"
     }
-    deployment_slug = "bodlexnig_personal_org"
-    
+
     # Constructing payload for tagging archived repositories
     payload = {"tags": ["archived"]}
-    
+
     # Tagging archived repositories in SEMGREP
     for project_name in projects_to_tag:
-        url = f"https://semgrep.dev/api/v1/deployments/{deployment_slug}/projects/{project_name}/tags"
-        response = requests.put(url, headers=headers, json=payload) 
-        try:
-            if response:
-                print(f"Project Tag Sucessful: {response}") # Printing response data
-        except Exception as e:
-            print(f"Error fetching projects: {e}")    
+        url = f"https://semgrep.dev/api/v1/deployments/{DEPLOYMENT_SLUG}/projects/{project_name}/tags"
+        response = requests.put(url, headers=headers, json=payload)
+        if response.ok:
+            print(f"Project tag successful: {project_name}")
+        else:
+            print(f"Project tag failed for {project_name}: {response.status_code} {response.text}")
+
+# Fail early rather than sending unauthenticated requests
+if not all([GITHUB_AUTH_TOKEN, SEMGREP_APP_TOKEN, GITHUB_ORG, DEPLOYMENT_SLUG]):
+    sys.exit(
+        "Set GITHUB_AUTH_TOKEN, SEMGREP_APP_TOKEN, GITHUB_ORG and "
+        "SEMGREP_DEPLOYMENT_SLUG before running."
+    )
 
 # Retrieve archived repositories
-data = get_paginated_data("https://org-link", GITHUB_AUTH_TOKEN)
+data = get_paginated_data(f"https://api.github.com/orgs/{GITHUB_ORG}/repos", GITHUB_AUTH_TOKEN)
 archived_repos = get_archived_repos(data)
 
 # Retrieve all projects from SEMGREP
